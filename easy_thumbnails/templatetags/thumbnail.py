@@ -91,7 +91,8 @@ class ThumbnailNode(Node):
 
         try:
             thumbnail = get_thumbnailer(source).get_thumbnail(opts)
-            thumbnail._dimensions_cache = opts['size']
+            if not thumbnail.storage.exists(thumbnail.name):
+                thumbnail._dimensions_cache = opts['size']
         except Exception:
             if raise_errors:
                 raise
