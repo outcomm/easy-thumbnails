@@ -20,7 +20,7 @@ def read_files(*filenames):
 
 setup(
     name='easy-thumbnails',
-    version=get_version(join='-'),
+    version='outcomm', #get_version(join='-'),
     url='http://github.com/SmileyChris/easy-thumbnails',
     #download_url='',
     description='Easy thumbnails for Django',
