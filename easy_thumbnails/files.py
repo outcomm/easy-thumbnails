@@ -2,71 +2,76 @@ from django.core.files.base import File, ContentFile
 from django.core.files.storage import get_storage_class, default_storage, \
     Storage
 from django.db.models.fields.files import ImageFieldFile, FieldFile
-from django.utils.html import escape
-from django.utils.safestring import mark_safe
-from easy_thumbnails import engine, models, utils, exceptions
-import datetime
 import os
+
+from django.utils.safestring import mark_safe
+from django.utils.html import escape
 from django.utils.http import urlquote
+
+from easy_thumbnails import engine, models, utils, exceptions
+from easy_thumbnails.alias import aliases
+from easy_thumbnails.conf import settings
 
 
 DEFAULT_THUMBNAIL_STORAGE = get_storage_class(
-                                        utils.get_setting('DEFAULT_STORAGE'))()
+    settings.THUMBNAIL_DEFAULT_STORAGE)()
 
 
-def get_thumbnailer(object, relative_name=None):
+def get_thumbnailer(obj, relative_name=None):
     """
     Get a :class:`Thumbnailer` for a source file.
 
-    The ``object`` argument is usually either one of the following:
+    The ``obj`` argument is usually either one of the following:
 
         * ``FieldFile`` instance (i.e. a model instance file/image field
           property).
 
-        * ``File`` or ``Storage`` instance, and for both of these cases the
-          ``relative_name`` argument must also be provided
-
         * A string, which will be used as the relative name (the source will be
-          set to the default storage)
+          set to the default storage).
 
-    For rarer needed cases, it can also be one of the following:
+        * ``Storage`` instance - the ``relative_name`` argument must also be
+          provided.
 
-        * ``Thumbnailer`` instance (the instance is just returned with no
-          processing)
+    Or it could be::
 
-        * An object with a ``easy_thumbnails_thumbnailer`` attribute (the
-          attribute is simply returned under the assumption it is a Thumbnailer
-          instance)
+        * A file-like instance - the ``relative_name`` argument must also be
+          provided.
+
+          In this case, the thumbnailer won't use or create a cached reference
+          to the thumbnail (i.e. a new thumbnail will be created for every
+          :meth:`Thumbnailer.get_thumbnail` call).
+
+    If ``obj`` is a ``Thumbnailer`` instance, it will just be returned. If it's
+    an object with an ``easy_thumbnails_thumbnailer`` then the attribute is
+    simply returned under the assumption it is a Thumbnailer instance)
     """
-    if hasattr(object, 'easy_thumbnails_thumbnailer'):
-        return object.easy_thumbnails_thumbnailer
-    if isinstance(object, Thumbnailer):
-        return object
-    elif isinstance(object, FieldFile):
+    if hasattr(obj, 'easy_thumbnails_thumbnailer'):
+        return obj.easy_thumbnails_thumbnailer
+    if isinstance(obj, Thumbnailer):
+        return obj
+    elif isinstance(obj, FieldFile):
         if not relative_name:
-            relative_name = object.name
-        return ThumbnailerFieldFile(object.instance, object.field,
-                                    relative_name)
+            relative_name = obj.name
+        return ThumbnailerFieldFile(obj.instance, obj.field, relative_name)
 
-    source_image = None
+    source_storage = None
 
-    if isinstance(object, basestring):
-        relative_name = object
-        object = default_storage
+    if isinstance(obj, basestring):
+        relative_name = obj
+        obj = None
 
     if not relative_name:
-        raise ValueError('If object is not a FieldFile or Thumbnailer '
-                         'instance, the relative name must be provided')
+        raise ValueError("If object is not a FieldFile or Thumbnailer "
+            "instance, the relative name must be provided")
 
-    if isinstance(object, File):
-        source_image = object.file
-    elif isinstance(object, Storage) or object == default_storage:
-        source_image = object.open(relative_name)
-    else:
-        raise TypeError('Unknown object type, expected a Thumbnailer, '
-                        'FieldFile, File or Storage instance.')
+    if isinstance(obj, File):
+        obj = obj.file
+    if isinstance(obj, Storage) or obj == default_storage:
+        source_storage = obj
+        obj = None
 
-    return Thumbnailer(source_image, relative_name)
+    return Thumbnailer(file=obj, name=relative_name,
+        source_storage=source_storage, remote_source=obj is not None)
 
 
 def save_thumbnail(thumbnail_file, storage):
@@ -80,6 +85,22 @@ def save_thumbnail(thumbnail_file, storage):
         except:
             pass
     return storage.save(filename, thumbnail_file)
+
+
+def generate_all_aliases(fieldfile, include_global):
+    """
+    Generate all of a file's aliases.
+
+    :param fieldfile: A ``FieldFile`` instance.
+    :param include_global: A boolean which determines whether to generate
+        thumbnails for project-wide aliases in addition to field, model, and
+        app specific aliases.
+    """
+    options = aliases.all(fieldfile, include_global=include_global)
+    if options:
+        thumbnailer = get_thumbnailer(fieldfile)
+        for options in options.values():
+            thumbnailer.get_thumbnail(options)
 
 
 class FakeField(object):
@@ -104,13 +125,15 @@ class ThumbnailFile(ImageFieldFile):
     This can be used just like a Django model instance's property for a file
     field (i.e. an ``ImageFieldFile`` object).
     """
-    def __init__(self, name, file=None, storage=None, *args, **kwargs):
+    def __init__(self, name, file=None, storage=None, thumbnail_options=None,
+            *args, **kwargs):
         fake_field = FakeField(storage=storage)
         super(ThumbnailFile, self).__init__(FakeInstance(), fake_field, name,
-                                            *args, **kwargs)
+            *args, **kwargs)
         del self.field
         if file:
             self.file = file
+        self.thumbnail_options = thumbnail_options
 
     def _get_image(self):
         """
@@ -175,7 +198,7 @@ class ThumbnailFile(ImageFieldFile):
         return self._file
 
     def _set_file(self, value):
-        if not isinstance(value, File):
+        if value is not None and not isinstance(value, File):
             value = File(value)
         self._file = value
         self._committed = False
@@ -224,23 +247,36 @@ class Thumbnailer(File):
         * source_generators
         * thumbnail_processors
     """
-    thumbnail_basedir = utils.get_setting('BASEDIR')
-    thumbnail_subdir = utils.get_setting('SUBDIR')
-    thumbnail_prefix = utils.get_setting('PREFIX')
-    thumbnail_quality = utils.get_setting('QUALITY')
-    thumbnail_extension = utils.get_setting('EXTENSION')
-    thumbnail_transparency_extension = utils.get_setting(
-                                                    'TRANSPARENCY_EXTENSION')
-    thumbnail_check_cache_miss = utils.get_setting('CHECK_CACHE_MISS')
+    thumbnail_basedir = settings.THUMBNAIL_BASEDIR
+    thumbnail_subdir = settings.THUMBNAIL_SUBDIR
+    thumbnail_prefix = settings.THUMBNAIL_PREFIX
+    thumbnail_quality = settings.THUMBNAIL_QUALITY
+    thumbnail_extension = settings.THUMBNAIL_EXTENSION
+    thumbnail_preserve_extensions = settings.THUMBNAIL_PRESERVE_EXTENSIONS
+    thumbnail_transparency_extension = \
+        settings.THUMBNAIL_TRANSPARENCY_EXTENSION
+    thumbnail_check_cache_miss = settings.THUMBNAIL_CHECK_CACHE_MISS
     source_generators = None
     thumbnail_processors = None
 
-    def __init__(self, file, name=None, source_storage=None,
-                 thumbnail_storage=None, *args, **kwargs):
+    def __init__(self, file=None, name=None, source_storage=None,
+            thumbnail_storage=None, remote_source=False, *args, **kwargs):
         super(Thumbnailer, self).__init__(file, name, *args, **kwargs)
         self.source_storage = source_storage or default_storage
         self.thumbnail_storage = (thumbnail_storage or
-                                  DEFAULT_THUMBNAIL_STORAGE)
+            DEFAULT_THUMBNAIL_STORAGE)
+        self.remote_source = remote_source
+        self.alias_target = None
+
+    def __getitem__(self, alias):
+        """
+        Retrieve a thumbnail matching the alias options (or raise a
+        ``KeyError`` if no such alias exists).
+        """
+        options = aliases.get(alias, target=self.alias_target)
+        if not options:
+            raise KeyError(alias)
+        return self.get_thumbnail(options)
 
     def generate_source_image(self, thumbnail_options):
         return engine.generate_source_image(self, thumbnail_options,
@@ -263,13 +299,14 @@ class Thumbnailer(File):
         quality = thumbnail_options.get('quality', self.thumbnail_quality)
 
         filename = self.get_thumbnail_name(thumbnail_options,
-                            transparent=utils.is_transparent(thumbnail_image))
+            transparent=utils.is_transparent(thumbnail_image))
 
         data = engine.save_image(thumbnail_image, filename=filename,
-                                 quality=quality).read()
+            quality=quality).read()
 
-        thumbnail = ThumbnailFile(filename, ContentFile(data),
-                                  storage=self.thumbnail_storage)
+        thumbnail = ThumbnailFile(filename, file=ContentFile(data),
+            storage=self.thumbnail_storage,
+            thumbnail_options=thumbnail_options)
         thumbnail.image = thumbnail_image
         thumbnail._committed = False
 
@@ -284,7 +321,11 @@ class Thumbnailer(File):
         path, source_filename = os.path.split(self.name)
         source_extension = os.path.splitext(source_filename)[1][1:]
         filename = '%s%s' % (self.thumbnail_prefix, source_filename)
-        if transparent:
+        if self.thumbnail_preserve_extensions == True or  \
+            (self.thumbnail_preserve_extensions and  \
+            source_extension.lower() in self.thumbnail_preserve_extensions):
+                extension = source_extension
+        elif transparent:
             extension = self.thumbnail_transparency_extension
         else:
             extension = self.thumbnail_extension
@@ -337,9 +378,9 @@ class Thumbnailer(File):
             names = (opaque_name, transparent_name)
         for filename in names:
             if self.thumbnail_exists(filename):
-                thumbnail = ThumbnailFile(name=filename,
-                                          storage=self.thumbnail_storage)
-                return thumbnail
+                return ThumbnailFile(name=filename,
+                    storage=self.thumbnail_storage,
+                    thumbnail_options=thumbnail_options)
 
         thumbnail = self.generate_thumbnail(thumbnail_options)
         if save:
@@ -361,6 +402,8 @@ class Thumbnailer(File):
         file modification times are used. Otherwise the database cached
         modification times are used.
         """
+        if self.remote_source:
+            return False
         # Try to use the local file modification times first.
         source_modtime = self.get_source_modtime()
         thumbnail_modtime = self.get_thumbnail_modtime(thumbnail_name)
@@ -376,20 +419,24 @@ class Thumbnailer(File):
         return thumbnail and source.modified <= thumbnail.modified
 
     def get_source_cache(self, create=False, update=False):
+        if self.remote_source:
+            return None
         modtime = self.get_source_modtime()
-        update_modified = modtime and datetime.datetime.fromtimestamp(modtime)
+        update_modified = modtime and utils.fromtimestamp(modtime)
         if update:
-            update_modified = update_modified or datetime.datetime.utcnow()
+            update_modified = update_modified or utils.now()
         return models.Source.objects.get_file(
             create=create, update_modified=update_modified,
             storage=self.source_storage, name=self.name,
             check_cache_miss=self.thumbnail_check_cache_miss)
 
     def get_thumbnail_cache(self, thumbnail_name, create=False, update=False):
+        if self.remote_source:
+            return None
         modtime = self.get_thumbnail_modtime(thumbnail_name)
-        update_modified = modtime and datetime.datetime.fromtimestamp(modtime)
+        update_modified = modtime and utils.fromtimestamp(modtime)
         if update:
-            update_modified = update_modified or datetime.datetime.utcnow()
+            update_modified = update_modified or utils.now()
         source = self.get_source_cache(create=True)
         return models.Thumbnail.objects.get_file(
             create=create, update_modified=update_modified,
@@ -414,6 +461,16 @@ class Thumbnailer(File):
         except NotImplementedError:
             return None
 
+    def open(self, mode=None):
+        if self.closed:
+            self.file = self.source_storage.open(self.name,
+                mode or self.mode or 'rb')
+        else:
+            self.seek(0)
+
+    # open() doesn't alter the file's contents, but it does reset the pointer.
+    open.alters_data = True
+
 
 class ThumbnailerFieldFile(FieldFile, Thumbnailer):
     """
@@ -426,6 +483,7 @@ class ThumbnailerFieldFile(FieldFile, Thumbnailer):
         thumbnail_storage = getattr(self.field, 'thumbnail_storage', None)
         if thumbnail_storage:
             self.thumbnail_storage = thumbnail_storage
+        self.alias_target = self
 
     def save(self, name, content, *args, **kwargs):
         """
@@ -447,6 +505,8 @@ class ThumbnailerFieldFile(FieldFile, Thumbnailer):
         # Finally, delete the source cache entry.
         if source_cache:
             source_cache.delete()
+
+    delete.alters_data = True
 
     def delete_thumbnails(self, source_cache=None):
         """
@@ -471,6 +531,8 @@ class ThumbnailerFieldFile(FieldFile, Thumbnailer):
                     deleted += 1
         return deleted
 
+    delete_thumbnails.alters_data = True
+
     def get_thumbnails(self, *args, **kwargs):
         """
         Return an iterator which returns ThumbnailFile instances.
@@ -493,6 +555,7 @@ class ThumbnailerImageFieldFile(ImageFieldFile, ThumbnailerFieldFile):
     A field file which provides some methods for generating (and returning)
     thumbnail images.
     """
+
     def save(self, name, content, *args, **kwargs):
         """
         Save the image.

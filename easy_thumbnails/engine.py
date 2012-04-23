@@ -1,20 +1,16 @@
-try:
-    from PIL import Image
-except ImportError:
-    import Image
-from easy_thumbnails import utils
 import os
 try:
     from cStringIO import StringIO
 except ImportError:
     from StringIO import StringIO
 
+try:
+    from PIL import Image
+except ImportError:
+    import Image
 
-DEFAULT_PROCESSORS = [utils.dynamic_import(p)
-                      for p in utils.get_setting('PROCESSORS')]
-
-SOURCE_GENERATORS = [utils.dynamic_import(p)
-                     for p in utils.get_setting('SOURCE_GENERATORS')]
+from easy_thumbnails import utils
+from easy_thumbnails.conf import settings
 
 
 def process_image(source, processor_options, processors=None):
@@ -23,7 +19,8 @@ def process_image(source, processor_options, processors=None):
     the (potentially) altered image.
     """
     if processors is None:
-        processors = DEFAULT_PROCESSORS
+        processors = [utils.dynamic_import(name)
+            for name in settings.THUMBNAIL_PROCESSORS]
     image = source
     for processor in processors:
         image = processor(image, **processor_options)
@@ -52,9 +49,9 @@ def save_image(image, destination=None, filename=None, **options):
     return destination
 
 
-def generate_source_image(source, processor_options, generators=None):
+def generate_source_image(source_file, processor_options, generators=None):
     """
-    Processes a source file through a series of source generators, stopping
+    Processes a source ``File`` through a series of source generators, stopping
     once a generator returns an image.
 
     The return value is this image instance or ``None`` if no generators
@@ -63,19 +60,21 @@ def generate_source_image(source, processor_options, generators=None):
     If the source file cannot be opened, it will be set to ``None`` and still
     passed to the generators.
     """
-    was_closed = source.closed
-    try:
-        source.open()
-    except Exception:
-        source = None
-        was_closed = False
+    was_closed = source_file.closed
     if generators is None:
-        generators = SOURCE_GENERATORS
+        generators = [utils.dynamic_import(name)
+            for name in settings.THUMBNAIL_SOURCE_GENERATORS]
     try:
+        source = source_file
+        try:
+            source.open()
+        except Exception:
+            source = None
+            was_closed = False
         for generator in generators:
             image = generator(source, **processor_options)
             if image:
                 return image
     finally:
         if was_closed:
-            source.close()
+            source_file.close()

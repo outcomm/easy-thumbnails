@@ -1,6 +1,6 @@
 from django.db import models
-from easy_thumbnails import utils
-import datetime
+
+from easy_thumbnails import utils, signal_handlers
 
 
 class FileManager(models.Manager):
@@ -37,7 +37,7 @@ class FileManager(models.Manager):
 class File(models.Model):
     storage_hash = models.CharField(max_length=40, db_index=True)
     name = models.CharField(max_length=255, db_index=True)
-    modified = models.DateTimeField(default=datetime.datetime.utcnow())
+    modified = models.DateTimeField(default=utils.now)
 
     objects = FileManager()
 
@@ -58,3 +58,7 @@ class Thumbnail(File):
 
     class Meta:
         unique_together = (('storage_hash', 'name', 'source'),)
+
+
+models.signals.pre_save.connect(signal_handlers.find_uncommitted_filefields)
+models.signals.post_save.connect(signal_handlers.signal_committed_filefields)

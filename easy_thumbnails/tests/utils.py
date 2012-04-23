@@ -1,9 +1,19 @@
-from django.conf import settings
-from django.core.files.storage import FileSystemStorage
-from django.test import TestCase
-from easy_thumbnails import defaults
 import shutil
 import tempfile
+try:
+    from cStringIO import StringIO
+except ImportError:
+    from StringIO import StringIO
+
+from django.core.files.base import ContentFile
+from django.core.files.storage import FileSystemStorage
+from django.test import TestCase
+try:
+    from PIL import Image
+except ImportError:
+    import Image
+
+from easy_thumbnails.conf import settings
 
 
 class TemporaryStorage(FileSystemStorage):
@@ -80,33 +90,35 @@ class BaseTest(TestCase):
     configuration module before running the tests to ensure there is a
     consistent test environment.
     """
-    restore_settings = ['THUMBNAIL_%s' % key for key in dir(defaults)
-                        if key.isupper()]
 
     def setUp(self):
         """
-        Remember THUMBNAIL_* settings for later and then remove them.
+        Isolate all settings.
         """
-        self._remembered_settings = {}
-        for setting in self.restore_settings:
-            if hasattr(settings, setting):
-                self._remembered_settings[setting] = getattr(settings, setting)
-                delattr(settings._wrapped, setting)
+        output = super(BaseTest, self).setUp()
+        settings.isolated = True
+        return output
 
     def tearDown(self):
         """
-        Restore all THUMBNAIL_* settings to their original state.
+        Restore settings to their original state.
         """
-        for setting in self.restore_settings:
-            self.restore_setting(setting)
+        settings.isolated = False
+        settings.revert()
+        return super(BaseTest, self).tearDown()
 
-    def restore_setting(self, setting):
+    def create_image(self, storage, filename, size=(800, 600),
+            image_mode='RGB', image_format='JPEG'):
         """
-        Restore an individual setting to it's original value (or remove it if
-        it didn't originally exist).
+        Generate a test image, returning the filename that it was saved as.
+
+        If ``storage`` is ``None``, the StringIO containing the image data
+        will be passed instead.
         """
-        if setting in self._remembered_settings:
-            value = self._remembered_settings.pop(setting)
-            setattr(settings, setting, value)
-        elif hasattr(settings, setting):
-            delattr(settings._wrapped, setting)
+        data = StringIO()
+        Image.new(image_mode, size).save(data, image_format)
+        data.seek(0)
+        if not storage:
+            return data
+        image_file = ContentFile(data.read())
+        return storage.save(filename, image_file)

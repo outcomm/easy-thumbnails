@@ -1,9 +1,12 @@
+import re
+
 from django.template import Library, Node, VariableDoesNotExist, \
     TemplateSyntaxError
-from easy_thumbnails import utils
-from easy_thumbnails.files import get_thumbnailer
 from django.utils.html import escape
-import re
+
+from easy_thumbnails import utils
+from easy_thumbnails.conf import settings
+from easy_thumbnails.files import get_thumbnailer
 
 register = Library()
 
@@ -20,7 +23,6 @@ def split_args(args):
 
     An argument looks like ``crop``, ``crop="some option"`` or ``crop=my_var``.
     Arguments which provide no value get a value of ``True``.
-
     """
     args_dict = {}
     for arg in args:
@@ -42,7 +44,7 @@ class ThumbnailNode(Node):
     def render(self, context):
         # Note that this isn't a global constant because we need to change the
         # value for tests.
-        raise_errors = utils.get_setting('DEBUG')
+        raise_errors = settings.THUMBNAIL_DEBUG
         # Get the source file.
         try:
             source = self.source_var.resolve(context)
@@ -93,9 +95,10 @@ class ThumbnailNode(Node):
             thumbnail = get_thumbnailer(source).get_thumbnail(opts)
             if not thumbnail.storage.exists(thumbnail.name):
                 thumbnail._dimensions_cache = opts['size']
-        except Exception:
+        except Exception, e:
             if raise_errors:
-                raise
+                raise TemplateSyntaxError(u"Couldn't get the thumbnail %s: %s" %
+                                          (source, e))
             return self.bail_out(context)
         # Return the thumbnail file url, or put the file on the context.
         if self.context_name is None:
@@ -134,14 +137,14 @@ def thumbnail(parser, token):
     processing the image to a thumbnail such as ``sharpen``, ``crop`` and
     ``quality=90``.
 
-    The thumbnail tag can also place a ``ThumbnailFile`` object in the context,
+    The thumbnail tag can also place a
+    :class:`~easy_thumbnails.files.ThumbnailFile` object in the context,
     providing access to the properties of the thumbnail such as the height and
     width::
 
         {% thumbnail [source] [size] [options] as [variable] %}
 
-    When ``as [variable]`` is used, the tag does not return the absolute URL of
-    the thumbnail.
+    When ``as [variable]`` is used, the tag doesn't output anything.
 
     **Debugging**
 
@@ -198,4 +201,43 @@ def thumbnail(parser, token):
     return ThumbnailNode(source_var, opts=opts, context_name=context_name)
 
 
+def thumbnailer(source):
+    """
+    Creates a thumbnailer from a ``FileFile``.
+
+    Example usage::
+
+        {% with photo=person.photo|thumbnailer %}
+        {% if photo %}
+            <a href="{{ photo.large.url }}">
+                {{ photo.square.tag }}
+            </a>
+        {% else %}
+            <img href="{% static 'template/fallback.png' %}" alt="" />
+        {% endif %}
+        {% endwith %}
+    """
+    return get_thumbnailer(source)
+
+
+def thumbnail_url(source, alias):
+    """
+    Return the thumbnail url for a source file using an aliased set of
+    thumbnail options.
+
+    If no matching alias is found, returns an empty string.
+
+    Example usage::
+
+        <img href="{{ person.photo|thumbnail_url:'small' }}" alt="">
+    """
+    try:
+        thumb = get_thumbnailer(source)[alias]
+    except Exception:
+        return ''
+    return thumb.url
+
+
 register.tag(thumbnail)
+register.filter(thumbnailer)
+register.filter(thumbnail_url)

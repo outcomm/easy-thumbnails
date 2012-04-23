@@ -1,13 +1,30 @@
-from django.conf import settings
-from django.utils.functional import LazyObject
-from django.utils.hashcompat import md5_constructor
-from easy_thumbnails import defaults
 import inspect
 import math
+import datetime
+
+from django.utils.functional import LazyObject
+from django.utils.hashcompat import md5_constructor
 try:
     from PIL import Image
 except ImportError:
     import Image
+
+try:
+    from django.utils import timezone
+    now = timezone.now
+
+    def fromtimestamp(timestamp):
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        if settings.USE_TZ:
+            default_timezone = timezone.get_default_timezone()
+            return timezone.make_aware(dt, default_timezone)
+        return dt
+
+except ImportError:
+    now = datetime.datetime.now
+    fromtimestamp = datetime.datetime.fromtimestamp
+
+from easy_thumbnails.conf import settings
 
 
 def image_entropy(im):
@@ -42,29 +59,15 @@ def valid_processor_options(processors=None):
     (and/or source generators)
     """
     if processors is None:
-        processors = [dynamic_import(p) for p in get_setting('PROCESSORS') +
-                      get_setting('SOURCE_GENERATORS')]
+        processors = [dynamic_import(p) for p in
+            settings.THUMBNAIL_PROCESSORS +
+            settings.THUMBNAIL_SOURCE_GENERATORS]
     valid_options = set(['size', 'quality'])
     for processor in processors:
         args = inspect.getargspec(processor)[0]
         # Add all arguments apart from the first (the source image).
         valid_options.update(args[1:])
     return list(valid_options)
-
-
-def get_setting(setting, override=None):
-    """
-    Get a thumbnail setting from Django settings module, falling back to the
-    default.
-
-    If override is not None, it will be used instead of the setting.
-    """
-    if override is not None:
-        return override
-    if hasattr(settings, 'THUMBNAIL_%s' % setting):
-        return getattr(settings, 'THUMBNAIL_%s' % setting)
-    else:
-        return getattr(defaults, setting)
 
 
 def is_storage_local(storage):
@@ -104,3 +107,30 @@ def is_transparent(image):
         return False
     return (image.mode in ('RGBA', 'LA') or
             (image.mode == 'P' and 'transparency' in image.info))
+
+
+def exif_orientation(im):
+    """
+    Rotate and/or flip an image to respect the image's EXIF orientation data.
+    """
+    try:
+        exif = im._getexif()
+    except (AttributeError, IndexError, KeyError):
+        exif = None
+    if exif:
+        orientation = exif.get(0x0112)
+        if orientation == 2:
+            im = im.transpose(Image.FLIP_LEFT_RIGHT)
+        elif orientation == 3:
+            im = im.rotate(180)
+        elif orientation == 4:
+            im = im.transpose(Image.FLIP_TOP_BOTTOM)
+        elif orientation == 5:
+            im = im.rotate(-90).transpose(Image.FLIP_LEFT_RIGHT)
+        elif orientation == 6:
+            im = im.rotate(-90)
+        elif orientation == 7:
+            im = im.rotate(90).transpose(Image.FLIP_LEFT_RIGHT)
+        elif orientation == 8:
+            im = im.rotate(90)
+    return im

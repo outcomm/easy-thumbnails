@@ -24,7 +24,7 @@ setup(
     url='http://github.com/SmileyChris/easy-thumbnails',
     #download_url='',
     description='Easy thumbnails for Django',
-    long_description=read_files('README'),
+    long_description=read_files('README.rst'),
     author='Chris Beaven',
     author_email='smileychris@gmail.com',
     platforms=['any'],
@@ -36,8 +36,7 @@ setup(
         'easy_thumbnails.templatetags',
         'easy_thumbnails.tests',
     ],
-    package_data={'easy_thumbnails': ['docs/*.py', 'docs/*.', 'docs/*.bat'
-                                      'docs/*.txt', 'docs/ref/*.txt']},
+    package_data={'easy_thumbnails': ['docs/*', 'docs/ref/*.txt']},
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Environment :: Web Environment',
@@ -49,5 +48,5 @@ setup(
         'Topic :: Software Development :: Libraries :: Application Frameworks',
         'Topic :: Software Development :: Libraries :: Python Modules',
     ],
-    zip_safe = False,
+    zip_safe=False,
 )
