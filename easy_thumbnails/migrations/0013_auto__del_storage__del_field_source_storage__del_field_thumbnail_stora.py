@@ -5,7 +5,7 @@ from south.v2 import SchemaMigration
 from django.db import models
 from django.core.files.storage import default_storage
 import pickle
-from django.utils.hashcompat import md5_constructor
+import hashlib
 
 class Migration(SchemaMigration):
 
@@ -48,7 +48,7 @@ class Migration(SchemaMigration):
         # at least it lets us reverse migrate.
         storage = orm.Storage()
         storage.pickle = pickle.dumps(default_storage)
-        storage.hash = md5_constructor(storage.pickle).hexdigest()
+        storage.hash = hashlib.md5(storage.pickle).hexdigest()
         storage.save()
 
         # Adding field 'Source.storage'
